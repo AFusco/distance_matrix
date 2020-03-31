@@ -1,0 +1,452 @@
+<html>
+	<head>
+		<meta charset="utf-8"/>
+		<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"></script>
+		<script src="https://d3js.org/d3.v5.min.js"></script>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<link rel="stylesheet" href="css/uikit.min.css" />
+		<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/uikit/3.2.7/css/uikit.min.css" integrity="sha256-qucHCX543JEPq/GHmAFZs3lce4I0M7Vhl6/DOUGPblM=" crossorigin="anonymous" />
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/uikit/3.2.7/js/uikit.min.js" integrity="sha256-On10SD1e/xCGW5uYN2V+qRNYFEM3tvjCLKXapoOWVPk=" crossorigin="anonymous"></script>
+		<script>
+
+
+			/**
+			 * Tries to understand the column type from the column name
+			 */
+			function getDefault(str) {
+				
+
+				if (str.match(/id/i))
+					return 'excel_id';
+
+				if (str.match(/point/i))
+					return 'item';
+
+				if (str.match(/latit/i))
+					return 'lat';
+
+				if (str.match(/longi/i))
+					return 'lon';
+
+				if (str.match(/type/i) || str.match(/code/i))
+					return 'node_type';
+
+				if (str.match(/cluster/i))
+					return 'cluster_id';
+
+				if (str.match(/address/i))
+					return 'ignore';
+
+				if (str.match(/C\.P\./i))
+					return 'ignore';
+
+				if (str.match(/city/i))
+					return 'ignore';
+
+				if (str.match(/complete/i) || str.match(/full/i))
+					return 'ignore';
+
+				return 'not_recognized';
+
+  		}
+
+			/**
+			 * Generates a select input with a default value, from the column name
+			 */
+			function generateSelect(name) {
+			  var values = ['excel_id', 'item', 'lat', 'lon', 'node_type', 'cluster_id', 'not_recognized', 'ignore']
+			  var texts = ['Id', 'Item', 'Latitude', 'Longitude', 'Node Type', 'Cluster ID', 'Not Recognized', '']
+				var def = getDefault(name);
+
+				console.log(def);
+
+				var div = $('<div>');
+				div.append($('<label>').text(name));
+
+			  var select = $("<select></select>").attr("id", name).attr("name", name);
+
+				$.each(values, function(index,v){
+					select.append($("<option></option>").attr("value", v).text(texts[index]));
+				});
+
+				select.val(def);
+
+				div.append(select)
+
+				return div;
+			}
+
+			/**
+			 * Returns an object mapping the old name of the column to the new name.
+			 * Items are marked as item_0 item_1 item2..etc
+			 */
+			function getColumnNames(column_types) {
+				var names = {};
+				var items = 0;
+				for (i = 0; i < column_types.length; i++) {
+					name = column_types[i].value;
+					if (column_types[i].value === 'item')
+						name += '_' + items++;
+					names[column_types[i].name] = name;
+				}
+				return names;
+			}
+
+			/**
+			 * Transforms the original data from the CSV file to an array of objects ready to be 
+			 * printed into a file and used to compute distance matrix.
+			 * This function does not assign java_ids
+			 */
+			function processRawData(raw_data) {
+
+				let column_types = $('#controlsContainer').serializeArray();
+				let new_names = getColumnNames(column_types);
+				let data = [];
+
+				// Rename columns; remove columns that are ignored
+				raw_data.forEach(function(row) {
+					let new_row = {};
+					Object.keys(new_names).forEach(function(old) {
+						if (new_names[old] !== 'ignore')
+							new_row[new_names[old]] = row[old];
+					});
+					data.push(new_row);
+				});
+
+				// Remove columns that don't have longitude or latitude.
+				// This is necessary if there are rows that have an index but are empty.
+				data = data.filter(function(row) {
+					valid = true;
+					valid = (row.excel_id !== undefined) && (row.excel_id !== null);
+					valid = valid && (row.lat !== undefined) && (row.lat !== null) && (row.lat !== '');
+					valid = valid && (row.lon !== undefined) && (row.lon !== null) && (row.lon !== '');
+					return valid;
+				});
+
+				// Translate node_types from the old format to the correct format.
+				// TODO: get this from user input.
+				let old_node_types = ['O & D', 'O', 'D', 'M', '']
+				let new_node_types = ['D', 'O', 'A', 'M', 'R']
+
+				// Transform the data into the corret format.
+				// TODO: check data types
+				data.forEach(function(row) {
+					row.excel_id = row.excel_id;
+					row.lat = +row.lat;
+					row.lon = +row.lon;
+
+					type_index = old_node_types.indexOf(row.node_type);
+					if (type_index < 0) {
+						console.log('Node type ' + row.node_type + ' not recognized. Setting as R.');
+						row.node_type = 'R';
+					} else {
+						row.node_type = new_node_types[type_index];
+					}
+
+					// Set demands as numbers.
+					Object.keys(row).filter( x =>x.startsWith('item_') ).forEach(
+						x => row[x] = +row[x]
+					);
+				});
+
+				return data;
+			}
+
+			/**
+			 * Assign java ids to the objects in the data array.
+			 * Java ids go from 0 to data.length-1.
+			 * The array will be sorted by java_id.
+			 * We can expect that in the end data[i].java_id == i
+			 * Java_ids are assigned in the order specified in node_types_order
+			 */
+			function assignJavaIds(data, node_types_order) {
+				let tmp_id = 0;
+				for (let i = 0; i < node_types_order.length; i++) {
+					for (let j = 0; j < data.length; j++) {
+						if (data[j].node_type === node_types_order[i]) {
+							data[j].java_id = tmp_id++;
+						}
+					}
+				}
+				/*
+				node_types_order.forEach( function(nt) {
+					data.filter(r => r.node_type === nt).forEach( r => r.java_id = tmp_id++ );
+				});
+				*/
+				data.sort(function(a, b) { return a.java_id - b.java_id; });
+				return data;
+			}
+
+			/**
+			 * Returns a string containing the nodes_file content.
+			 * Java_ids will be recomputed here and the data will be sorted.
+			 * This allows to create multiple cluster files sequentially without copying.
+			 */
+			function formatNodesFile(data, node_types_order) {
+
+				data = assignJavaIds(data, node_types_order);
+
+				result = '# excelID | javaID | type of node (D,M,R) | latitude | longitude |  item1 | item2 \n';
+				data.forEach(function(row) {
+					result += '' + row.excel_id + ' ' + row.java_id + ' ' + row.node_type;
+					result += ' ' + row.lat + ' ' + row.lon;
+					Object.keys(row).filter(x => x.startsWith('item_')).forEach(function(key) {
+						result += ' ' + row[key];
+					});
+					result += '\n';
+				});
+
+				return result;
+			}
+
+			/**
+			 * Returns a string containing the nodes_file content.
+			 * Java_ids will be recomputed here and the data will be sorted.
+			 * This allows to create multiple cluster files sequentially without copying.
+			 */
+			function formatEdgesFile(data, dima) {
+
+				result = '# source java ID | destination java id | time (sec) | air distance (km) \n';
+				for (let i = 0; i < dima.length; i++) {
+					for (let j = 0; j < dima.length; j++) {
+						let dist = getEuclideanDistance(data[i].lat, data[i].lon, data[j].lat, data[j].lon);
+						result += '' + i + ' ' + j + ' ' + dima[i][j].toFixed(3) + ' ' + dist.toFixed(3) + '\n';
+					}
+				}
+
+				return result;
+			}
+
+			/**
+			 * Creates a query string in the format lon0,lat0;lon1,lat1;lon2,lat2
+			 * Ready to be used for querying osrm
+			 */
+			function dataToCoordString(data) {
+				let string = '';
+				let points = []
+				for (let i = 0; i < data.length; i++) {
+					points.push('' + data[i].lon + ',' + data[i].lat);
+				}
+				return points.join(';');
+			}
+
+			/**
+			 * Queries osrm and calls the callback function with the driving durations.
+			 */
+			function getTime(data, sources, destinations, max_retries=5) {
+				let osrm_url = 'http://router.project-osrm.org/table/v1/driving/'
+				let url = osrm_url + dataToCoordString(data) + '?';
+				let result = {}
+
+				if (sources !== undefined) {
+					url += '&sources=' + sources.join(';');
+				}
+
+				if (destinations !== undefined) {
+					url += '&destinations=' + destinations.join(';');
+				}
+
+				let a = 123;
+
+				// Return promise
+				return $.getJSON(url);
+			}
+
+			/**
+			 * Utility function to create an array containing values in [beginning;end[
+			 */
+			function range(beginning, exclusive_end) {
+				let arr = [];
+				for (let i = beginning; i < exclusive_end; i++) {
+					arr.push(i);
+				}
+				return arr;
+			}
+
+			/**
+			 * Compute the distance matrix by splitting the input data into multiple chunks
+			 * and querying OSMR multiple times.
+			 */
+			function getDistanceMatrix(data, callback) {
+
+				let chunk_size = 100;
+				let size = data.length
+				let num_chunks = Math.ceil(size / chunk_size);
+				let chunk_ranges = [];
+
+
+				// Compute chunk ranges.
+				// The numbers are relative to the index in the data array, not java_ids.
+				for (let i = 0; i < num_chunks; i++) {
+					chunk_ranges.push([i*chunk_size, Math.min((i+1)*chunk_size, size)])
+				}
+
+				let promises = [];
+
+				// For each range, compute the matrix
+				for (let i = 0; i < num_chunks; i++) {
+					for (let j = 0; j < num_chunks; j++) {
+					  let src = chunk_ranges[i];
+						let dst = chunk_ranges[j];
+						let query_points = [];
+
+						let sources = undefined;
+						let destinations = undefined;
+
+						nsrc = src[1]-src[0];
+						ndst = dst[1]-dst[0];
+
+						for (let a = src[0]; a < src[1]; a++) {
+							query_points.push(data[a]);
+						}
+
+						if (src[0] != dst[0]) {
+							for (let b = dst[0]; b < dst[1]; b++) {
+								query_points.push(data[b]);
+							}
+							sources = range(0, nsrc);
+							destinations = range(nsrc, nsrc+ndst);
+						}
+
+						// Copy the partial result to the result matrix
+						promises.push(getTime(query_points, sources, destinations).then( function(data) {
+							return {
+								'src': src,
+								'dst': dst,
+								'durations': data.durations,
+							}
+					  }));
+					}
+				}
+
+				return Promise.all(promises);
+			}
+
+			var raw_data = {};
+			var lulz = {};
+
+		  var instance_name = '';
+
+			function toRadians(degrees) {
+				return degrees * Math.PI/180;
+			}
+
+			function getEuclideanDistance(lat1, lon1, lat2, lon2) {
+				var R = 6368.853;
+
+				var φ1 = toRadians(lat1);
+				var φ2 = toRadians(lat2);
+				var Δφ = toRadians(lat2-lat1);
+				var Δλ = toRadians(lon2-lon1);
+
+				var a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
+					Math.cos(φ1) * Math.cos(φ2) *
+					Math.sin(Δλ/2) * Math.sin(Δλ/2);
+				var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+				var d = R * c;
+
+				return d;
+			}
+
+			function generateControls(input) {
+
+				const fp = input.files[0];
+				const reader = new FileReader();
+				instance_name = fp.name.split('.')[0];
+				$('#instanceName').text(instance_name);
+				reader.readAsText(fp);
+				reader.onloadend = () => {
+					raw_data = d3.csvParse(reader.result);
+					var headers = d3.keys(raw_data[0]);
+					console.log(headers);
+					let controls = $('#controlsContainer');
+					controls.empty();
+					for (let i = 0; i < headers.length; i++) {
+						controls.append(generateSelect(headers[i]));
+					}
+				};
+			}
+
+			function download(filename, text) {
+				var element = document.createElement('a');
+				element.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(text));
+				element.setAttribute('download', filename);
+
+				element.style.display = 'none';
+				document.body.appendChild(element);
+				element.click();
+				document.body.removeChild(element);
+			}
+
+			function generateAll() {
+				let processed_data = processRawData(raw_data);
+				console.log('Processed Data:', processed_data);
+
+				let nodes_content = formatNodesFile(processed_data, ['D', 'O', 'A', 'M', 'R', '']);
+				console.log('Nodes File', nodes_content);
+
+				let distance_matrix = getDistanceMatrix(processed_data);
+
+				let size = processed_data.length
+
+				distance_matrix.then(function(results) {
+
+					// Allocate result matrix
+					let dm = new Array(size);
+					for (let i = 0; i < size; i++) {
+						dm[i] = new Array(size);
+					}
+
+					for (let query = 0; query < results.length; query++) {
+						let f = results[query];
+						for (let a = f.src[0]; a < f.src[1]; a++) {
+							for (let b = f.dst[0]; b < f.dst[1]; b++) {
+								dm[a][b] = f.durations[ a - f.src[0] ][ b - f.dst[0]];
+							}
+						}
+					}
+
+					return dm;
+
+				}).then(function(dm) {
+					let edges_content = formatEdgesFile(processed_data, dm);
+  				download(instance_name + '_input_edges.txt', edges_content);
+				  download(instance_name + '_input_nodes.txt', nodes_content);
+				});
+
+			}
+
+
+		</script>
+		<style>
+	body {
+		display: flex;
+		flex-direction: column;
+		width: 100vw;
+		height: 100vh;
+		align-items: center;
+	}
+
+	#controlsContainer, #inputControlContainer {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+	}
+
+	body input {
+		width: 600px;
+		margin-bottom:16px;
+		border: 1px solid gray;
+	}
+		</style>
+	</head>
+	<body>
+		<input type="file" id="myInput" onchange="generateControls(this)" />
+		<h1 id="instanceName"></h1>
+		<form id="controlsContainer" class="uk-form-horizontal uk-margin-small">
+		</form>
+
+		<button id="diocan" onclick="generateAll()">Generate files</button>
+	</body>
+</html>
