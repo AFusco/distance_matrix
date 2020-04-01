@@ -312,7 +312,7 @@
 			 * Queries osrm and calls the callback function with the driving durations.
 			 */
 			function getTime(data, sources, destinations, max_retries=5) {
-				let osrm_url = 'http://router.project-osrm.org/table/v1/driving/'
+				let osrm_url = 'https://router.project-osrm.org/table/v1/driving/'
 				let url = osrm_url + dataToCoordString(data) + '?';
 				let result = {}
 
