@@ -29,7 +29,12 @@
 				if (str.match(/complete/i) || str.match(/full/i))
 					return 'ignore';
 
-				if (str.match(/id/i))
+				/*
+				if (str.match(/cluster/i))
+					return 'cluster_id';
+					*/
+
+				if (str.match(/^id/i))
 					return 'excel_id';
 
 				if (str.match(/point/i))
@@ -44,20 +49,62 @@
 				if (str.match(/type/i) || str.match(/code/i))
 					return 'node_type';
 
-				if (str.match(/cluster/i))
-					return 'cluster_id';
-
-
-				return 'not_recognized';
-
+				return 'ignore';
   		}
+
+			function countColumnTypes() {
+				let column_types = $('#columnTypeForm').serializeArray();
+
+				counts = {}
+				$.each(column_types, (i, v) => {
+					if (counts[v.value] === undefined) {
+						counts[v.value] = 1;
+					} else {
+						counts[v.value] = counts[v.value]+1;
+					}
+				});
+				return counts;
+			}
+
+			function applyValidation() {
+				errors = validateColumnTypes();
+				if (errors.length === 0) {
+					$('#errorsDiv').attr('hidden', true);
+					$('#generateAllBtn').prop('disabled', false);
+				} else {
+					$('#errorsDiv').removeAttr('hidden');
+					$('#errorsDiv').html('<p>' + errors.join('<p/><p>') +'</p>');
+					$('#generateAllBtn').prop('disabled', true);
+				}
+			}
+
+			function validateColumnTypes() {
+				counts = countColumnTypes();
+
+				errs = []
+
+				if (counts['excel_id'] != 1) {
+					errs.push('There must be at least 1 excel_id column');
+				}
+				if (counts['lat'] != 1) {
+					errs.push('There must be exactly 1 latitude column');
+				}
+				if (counts['lon'] != 1) {
+					errs.push('There must be exactly 1 longitude column');
+				}
+				if (counts['node_type'] != 1) {
+					errs.push('There must be exactly 1 node_type column');
+				}
+
+				return errs;
+			}
 
 			/**
 			 * Generates a select input with a default value, from the column name
 			 */
 			function generateSelect(name) {
-			  var values = ['excel_id', 'item', 'lat', 'lon', 'node_type', 'cluster_id', 'not_recognized', 'ignore']
-			  var texts = ['Id', 'Item', 'Latitude', 'Longitude', 'Node Type', 'Cluster ID', 'Not Recognized', '']
+			  var values = ['excel_id', 'item', 'lat', 'lon', 'node_type', /*'cluster_id',*/ 'not_recognized', 'ignore']
+			  var texts = ['Id', 'Item', 'Latitude', 'Longitude', 'Node Type', /*'Cluster ID',*/ 'Not Recognized', '']
 				var def = getDefault(name);
 
 				/*
@@ -71,6 +118,7 @@
 				var label = $('<td>', {'class': 'uk-text-right uk-text-normal uk-table-middle'}).text(name);
 				var td2 = $('<td>');
 				var select = $('<select>', {'class': 'uk-select uk-form-small', 'form': 'columnTypeForm'}).attr('id', name).attr('name', name);
+				select.change(applyValidation);
 				$.each(values, function(index, v) {
 					select.append($("<option>").attr("value", v).text(texts[index]));
 				});
@@ -153,12 +201,12 @@
 
 				// Translate node_types from the old format to the correct format.
 				// TODO: get this from user input.
-				let old_node_types = ['O & D', 'O', 'D', 'M', '']
-				let new_node_types = ['D', 'O', 'A', 'M', 'R']
+				let old_node_types = ['O & D', 'O', 'D', 'M', 'R', ''];
+				let new_node_types = ['D', 'O', 'A', 'M', 'R', 'R'];
 
 				// Transform the data into the corret format.
 				// TODO: check data types
-				data.forEach(function(row) {
+				$.each(data, function(i, row) {
 					row.excel_id = row.excel_id;
 					row.lat = +row.lat;
 					row.lon = +row.lon;
@@ -166,6 +214,7 @@
 					type_index = old_node_types.indexOf(row.node_type);
 					if (type_index < 0) {
 						console.log('Node type ' + row.node_type + ' not recognized. Setting as R.');
+						alert('Node type at row ' + i + ' (' + row.node_type + ') was not recognized. \nValid types are O & D, O, D, M \n the type was automatically set as R (recogida)');
 						row.node_type = 'R';
 					} else {
 						row.node_type = new_node_types[type_index];
@@ -257,6 +306,7 @@
 				}
 				return points.join(';');
 			}
+
 
 			/**
 			 * Queries osrm and calls the callback function with the driving durations.
@@ -377,15 +427,18 @@
 			}
 
 			function generateControls(input) {
-
 				const fp = input.files[0];
 				const reader = new FileReader();
 				instance_name = fp.name.split('.')[0];
-				//$('#instanceName').text(instance_name);
 				$('#instanceName').text(instance_name);
 				reader.readAsText(fp);
 				reader.onloadend = () => {
+					$('#formTable').removeAttr('hidden');
+					$('#generateAllBtn').removeAttr('hidden');
+
 					raw_data = d3.csvParse(reader.result);
+
+				  $('#instanceDetails').text('Number of rows: ' + raw_data.length);
 					var headers = d3.keys(raw_data[0]);
 					console.log(headers);
 					let controls = $('#formTable > tbody');
@@ -411,12 +464,16 @@
 				let processed_data = processRawData(raw_data);
 				console.log('Processed Data:', processed_data);
 
+				if (processed_data == null) {
+					console.log('Failed to generate data');
+					return;
+				}
+
 				let nodes_content = formatNodesFile(processed_data, ['D', 'O', 'A', 'M', 'R', '']);
 				console.log('Nodes File', nodes_content);
 
 				let distance_matrix = getDistanceMatrix(processed_data);
-
-				let size = processed_data.length
+				let size = processed_data.length;
 
 				distance_matrix.then(function(results) {
 
@@ -448,7 +505,18 @@
 
 		</script>
 		<style>
+
+html, body {
+    height: 100%;
+}
+
+html {
+    display: table;
+    margin: auto;
+}
+
 body {
+    vertical-align: middle;
 	display: flex;
 	flex-direction: column;
 	width: 100vw;
@@ -456,51 +524,38 @@ body {
 	align-items: center;
 }
 
-	#controlsContainer, #inputControlContainer {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-	}
-
-	body input {
-		width: 600px;
-		margin-bottom:16px;
-		border: 1px solid gray;
-	}
 		</style>
 	</head>
-	<body>
+	<body style="width: 700px">
 
-		<input type="file" id="myInput" onchange="generateControls(this)" />
 		<h1 id="instanceName"></h1>
+		<h4 id="instanceDetails"></h4>
+		<!--		<input type="file" id="myInput" onchange="generateControls(this)" />-->
 		<form id="controlsContainer" class="uk-form-horizontal uk-margin-small">
+
+		<div class="js-upload" uk-form-custom>
+    <input type="file" onchange="generateControls(this)" id="myInput">
+    <button class="uk-button uk-button-default" type="button" tabindex="-1">Select CSV File</button>
+    </div>
+
+
 		</form>
 
 		<form id="columnTypeForm"></form>
 
-		<table id="formTable" class="uk-table uk-table-middle uk-table-small uk-rable-justify uk-table-divider" style="width: 80%">
+		<table id="formTable" class="uk-table uk-table-middle uk-table-small uk-rable-justify uk-table-divider" hidden>
 			<thead>
 				<tr>
-					<th class="uk-text-normal">Column Name</th>
+					<th class="uk-text-right">Column Name</th>
 					<th class="uk-width-medium">Column Type</th>
 				</tr>
 			</thead>
 			<tbody>
-				<tr>
-					<td class="uk-text-right uk-text-normal uk-table-middle">Prova</td>
-					<td><select class="uk-select uk-form-small" form="columnTypeForm"><option>1</option><option>2</option></select></td>
-				</tr>
-				<tr>
-					<td class="uk-text-right uk-table-middle">Prova titolo molto lunghissimo</td>
-					<td><select class="uk-select uk-form-small" form="columnTypeForm"><option>1</option><option>2</option></select></td>
-				</tr>
-				<tr>
-					<td class="uk-text-right uk-table-middle">Prova</td>
-					<td><select class="uk-select uk-form-small" form="columnTypeForm"><option>1</option><option>2</option></select></td>
-				</tr>
 			</tbody>
 		</table>
+		<div class="uk-alert-danger" id="errorsDiv" uk-alert hidden>
+		</div>
 
-		<button id="generateAllBtn" class="uk-button uk-button-primary" onclick="generateAll()">Generate files</button>
+		<button id="generateAllBtn" class="uk-button uk-button-primary" onclick="generateAll()" hidden>Generate files</button>
 	</body>
 </html>
